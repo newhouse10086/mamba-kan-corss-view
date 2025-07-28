@@ -78,27 +78,60 @@ class UniversityDataset(Dataset):
         drone_images = []
         satellite_images = []
         
-        drone_class_dirs = sorted(os.listdir(self.drone_dir))
-        for class_dir in drone_class_dirs:
-            class_path = os.path.join(self.drone_dir, class_dir)
-            if os.path.isdir(class_path):
-                images = [os.path.join(class_dir, f) for f in os.listdir(class_path) if f.endswith(('.jpg', '.jpeg', '.png'))]
-                drone_images.extend(images)
+        if os.path.isdir(self.drone_dir):
+            drone_class_dirs = sorted(os.listdir(self.drone_dir))
+            for class_dir in drone_class_dirs:
+                class_path = os.path.join(self.drone_dir, class_dir)
+                if os.path.isdir(class_path):
+                    images = [os.path.join(class_dir, f) for f in os.listdir(class_path) if f.endswith(('.jpg', '.jpeg', '.png'))]
+                    drone_images.extend(images)
 
-        satellite_class_dirs = sorted(os.listdir(self.satellite_dir))
-        for class_dir in satellite_class_dirs:
-            class_path = os.path.join(self.satellite_dir, class_dir)
-            if os.path.isdir(class_path):
-                images = [os.path.join(class_dir, f) for f in os.listdir(class_path) if f.endswith(('.jpg', '.jpeg', '.png'))]
-                satellite_images.extend(images)
+        if os.path.isdir(self.satellite_dir):
+            satellite_class_dirs = sorted(os.listdir(self.satellite_dir))
+            for class_dir in satellite_class_dirs:
+                class_path = os.path.join(self.satellite_dir, class_dir)
+                if os.path.isdir(class_path):
+                    images = [os.path.join(class_dir, f) for f in os.listdir(class_path) if f.endswith(('.jpg', '.jpeg', '.png'))]
+                    satellite_images.extend(images)
         
         self.drone_images = sorted(drone_images)
         self.satellite_images = sorted(satellite_images)
         # --- 修复结束 ---
         
-        # 标签和相机ID
-        self.labels = np.array([int(os.path.basename(img).split('_')[0]) for img in self.drone_images])
-        self.cameras = np.array([int(os.path.basename(img).split('_')[1]) for img in self.drone_images])
+        # 标签和相机ID (添加try-except来跳过格式错误的文件)
+        labels_list = []
+        cameras_list = []
+        valid_drone_images = []
+        for img in self.drone_images:
+            try:
+                # 提取ID和相机ID
+                parts = os.path.basename(img).split('_')
+                label = int(parts[0])
+                camera = int(parts[1])
+                labels_list.append(label)
+                cameras_list.append(camera)
+                valid_drone_images.append(img)
+            except (ValueError, IndexError):
+                print(f"Skipping malformed drone filename: {img}")
+                continue
+        
+        self.drone_images = valid_drone_images
+        self.labels = np.array(labels_list)
+        self.cameras = np.array(cameras_list)
+
+        # 同样为satellite图像添加安全检查
+        valid_satellite_images = []
+        for img in self.satellite_images:
+            try:
+                # 仅检查格式，不提取标签
+                parts = os.path.basename(img).split('_')
+                int(parts[0])
+                int(parts[1])
+                valid_satellite_images.append(img)
+            except (ValueError, IndexError):
+                print(f"Skipping malformed satellite filename: {img}")
+                continue
+        self.satellite_images = valid_satellite_images
         
         # 合并图像路径 (现在需要加上drone_dir和satellite_dir)
         self.all_images = [os.path.join(self.drone_dir, img) for img in self.drone_images] + \
