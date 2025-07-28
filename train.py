@@ -47,6 +47,9 @@ def parse_args():
     """解析命令行参数"""
     parser = argparse.ArgumentParser(description='FSRA-VMK Training')
     
+    # 通用配置
+    parser.add_argument('--config', type=str, default='', help='YAML 配置文件路径')
+
     # 数据集参数
     parser.add_argument('--data_dir', type=str, default='./data/University-1652',
                         help='数据集根目录')
@@ -496,6 +499,32 @@ class FSRATrainer:
 def main():
     """主函数"""
     args = parse_args()
+
+    # 如果提供了 YAML 配置文件，加载并覆盖默认参数
+    if args.config:
+        import yaml, argparse
+        with open(args.config, 'r', encoding='utf-8') as f:
+            cfg_dict = yaml.safe_load(f)
+
+        # 递归扁平化字典
+        def flatten_dict(d, parent_key='', sep='.'):  # simple flatten
+            items = {}
+            for k, v in d.items():
+                new_key = f"{parent_key}{sep}{k}" if parent_key else k
+                if isinstance(v, dict):
+                    items.update(flatten_dict(v, new_key, sep=sep))
+                else:
+                    items[new_key] = v
+            return items
+
+        flat_cfg = flatten_dict(cfg_dict)
+
+        for key, value in flat_cfg.items():
+            # 将嵌套键转换为属性名，例如 training.batch_size -> batch_size
+            attr = key.split('.')[-1]
+            if hasattr(args, attr):
+                setattr(args, attr, value)
+        print(f"🔧 从配置文件 {args.config} 加载参数并覆盖默认值")
     
     # 设置随机种子
     set_seed(args.seed)
