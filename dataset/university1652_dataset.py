@@ -74,73 +74,63 @@ class UniversityDataset(Dataset):
         self.drone_dir = os.path.join(data_dir, 'drone')
         self.satellite_dir = os.path.join(data_dir, 'satellite')
         
-        # --- 修复：遍历子目录加载图像 ---
+        # --- 新的数据加载逻辑 ---
         drone_images = []
         satellite_images = []
+        labels = []
         
+        # 加载Drone图像
         if os.path.isdir(self.drone_dir):
-            drone_class_dirs = sorted(os.listdir(self.drone_dir))
-            for class_dir in drone_class_dirs:
+            for class_dir in sorted(os.listdir(self.drone_dir)):
                 class_path = os.path.join(self.drone_dir, class_dir)
                 if os.path.isdir(class_path):
-                    images = [os.path.join(class_dir, f) for f in os.listdir(class_path) if f.endswith(('.jpg', '.jpeg', '.png'))]
-                    drone_images.extend(images)
+                    try:
+                        class_id = int(class_dir)
+                        for f in os.listdir(class_path):
+                            if f.startswith('image-') and f.endswith('.jpeg'):
+                                drone_images.append(os.path.join(class_path, f))
+                                labels.append(class_id)
+                    except ValueError:
+                        continue # 跳过非数字的目录名
 
+        # 加载Satellite图像
         if os.path.isdir(self.satellite_dir):
-            satellite_class_dirs = sorted(os.listdir(self.satellite_dir))
-            for class_dir in satellite_class_dirs:
+            for class_dir in sorted(os.listdir(self.satellite_dir)):
                 class_path = os.path.join(self.satellite_dir, class_dir)
                 if os.path.isdir(class_path):
-                    images = [os.path.join(class_dir, f) for f in os.listdir(class_path) if f.endswith(('.jpg', '.jpeg', '.png'))]
-                    satellite_images.extend(images)
+                    try:
+                        class_id = int(class_dir)
+                        # 卫星图像文件名与目录名相同
+                        satellite_img_path = os.path.join(class_path, f"{class_dir}.jpg")
+                        if os.path.exists(satellite_img_path):
+                            satellite_images.append(satellite_img_path)
+                            # 确保satellite的标签顺序与drone一致，这里我们只构建路径
+                    except ValueError:
+                        continue
         
-        self.drone_images = sorted(drone_images)
-        self.satellite_images = sorted(satellite_images)
-        # --- 修复结束 ---
+        self.drone_images = drone_images
+        self.satellite_images = satellite_images
+        self.labels = np.array(labels)
         
-        # 标签和相机ID (添加try-except来跳过格式错误的文件)
-        labels_list = []
-        cameras_list = []
-        valid_drone_images = []
-        for img in self.drone_images:
-            try:
-                # 提取ID和相机ID
-                parts = os.path.basename(img).split('_')
-                label = int(parts[0])
-                camera = int(parts[1])
-                labels_list.append(label)
-                cameras_list.append(camera)
-                valid_drone_images.append(img)
-            except (ValueError, IndexError):
-                print(f"Skipping malformed drone filename: {img}")
-                continue
+        # 合并所有图像和标签
+        self.all_images = self.drone_images + self.satellite_images
         
-        self.drone_images = valid_drone_images
-        self.labels = np.array(labels_list)
-        self.cameras = np.array(cameras_list)
-
-        # 同样为satellite图像添加安全检查
-        valid_satellite_images = []
-        for img in self.satellite_images:
-            try:
-                # 仅检查格式，不提取标签
-                parts = os.path.basename(img).split('_')
-                int(parts[0])
-                int(parts[1])
-                valid_satellite_images.append(img)
-            except (ValueError, IndexError):
-                print(f"Skipping malformed satellite filename: {img}")
-                continue
-        self.satellite_images = valid_satellite_images
-        
-        # 合并图像路径 (现在需要加上drone_dir和satellite_dir)
-        self.all_images = [os.path.join(self.drone_dir, img) for img in self.drone_images] + \
-                          [os.path.join(self.satellite_dir, img) for img in self.satellite_images]
-        self.all_labels = np.concatenate([self.labels, self.labels])
+        # 为satellite图像生成标签
+        satellite_labels = []
+        for img_path in self.satellite_images:
+            class_id = int(os.path.basename(os.path.dirname(img_path)))
+            satellite_labels.append(class_id)
+            
+        self.all_labels = np.concatenate([self.labels, np.array(satellite_labels)])
         
         # 用于RandomIdentitySampler
-        self.pids = list(set(self.all_labels))
+        self.pids = sorted(list(set(self.all_labels)))
         self.pid_dic = {pid: i for i, pid in enumerate(self.pids)}
+        
+        # 过滤掉标签不存在于pid_dic中的样本
+        valid_indices = [i for i, label in enumerate(self.all_labels) if label in self.pid_dic]
+        self.all_images = [self.all_images[i] for i in valid_indices]
+        self.all_labels = [self.all_labels[i] for i in valid_indices]
     
     def __len__(self):
         return len(self.all_images)
@@ -148,10 +138,14 @@ class UniversityDataset(Dataset):
     def __getitem__(self, index):
         path = self.all_images[index]
         label = self.all_labels[index]
+        
+        # 获取映射后的PID
+        pid = self.pid_dic[label]
+        
         img = Image.open(path).convert('RGB')
         img = self.transform(img)
         
-        return img, self.pid_dic[label]
+        return img, pid
 
 class RandomIdentitySampler(torch.utils.data.sampler.Sampler):
     """
