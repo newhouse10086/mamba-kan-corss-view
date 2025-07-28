@@ -45,7 +45,7 @@ def get_transforms(h, w, erasing_p, color_jitter):
     获取与官方FSRA一致的图像变换
     """
     transform_list = [
-        transforms.Resize((h, w), interpolation=3),
+        transforms.Resize((h, w), interpolation=transforms.InterpolationMode.BICUBIC),
         transforms.Pad(10),
         transforms.RandomCrop((h, w)),
         transforms.RandomHorizontalFlip(),

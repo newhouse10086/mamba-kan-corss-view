@@ -119,6 +119,11 @@ if __name__ == '__main__':
     image_datasets = {
         'train': UniversityDataset(opt.data_dir, opt.h, opt.w, opt.erasing_p, opt.color_jitter)
     }
+    
+    # --- 断言：检查数据集是否为空 ---
+    assert len(image_datasets['train']) > 0, \
+        f"Error: Training dataset is empty. Please check the data directory: {opt.data_dir}"
+    
     dataloaders = {
         'train': DataLoader(
             image_datasets['train'],
