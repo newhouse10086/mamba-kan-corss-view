@@ -74,15 +74,33 @@ class UniversityDataset(Dataset):
         self.drone_dir = os.path.join(data_dir, 'drone')
         self.satellite_dir = os.path.join(data_dir, 'satellite')
         
-        # 过滤非图像文件
-        self.drone_images = sorted([f for f in os.listdir(self.drone_dir) if f.endswith(('.jpg', '.jpeg', '.png'))])
-        self.satellite_images = sorted([f for f in os.listdir(self.satellite_dir) if f.endswith(('.jpg', '.jpeg', '.png'))])
+        # --- 修复：遍历子目录加载图像 ---
+        drone_images = []
+        satellite_images = []
+        
+        drone_class_dirs = sorted(os.listdir(self.drone_dir))
+        for class_dir in drone_class_dirs:
+            class_path = os.path.join(self.drone_dir, class_dir)
+            if os.path.isdir(class_path):
+                images = [os.path.join(class_dir, f) for f in os.listdir(class_path) if f.endswith(('.jpg', '.jpeg', '.png'))]
+                drone_images.extend(images)
+
+        satellite_class_dirs = sorted(os.listdir(self.satellite_dir))
+        for class_dir in satellite_class_dirs:
+            class_path = os.path.join(self.satellite_dir, class_dir)
+            if os.path.isdir(class_path):
+                images = [os.path.join(class_dir, f) for f in os.listdir(class_path) if f.endswith(('.jpg', '.jpeg', '.png'))]
+                satellite_images.extend(images)
+        
+        self.drone_images = sorted(drone_images)
+        self.satellite_images = sorted(satellite_images)
+        # --- 修复结束 ---
         
         # 标签和相机ID
-        self.labels = np.array([int(img.split('_')[0]) for img in self.drone_images])
-        self.cameras = np.array([int(img.split('_')[1]) for img in self.drone_images])
+        self.labels = np.array([int(os.path.basename(img).split('_')[0]) for img in self.drone_images])
+        self.cameras = np.array([int(os.path.basename(img).split('_')[1]) for img in self.drone_images])
         
-        # 合并图像路径
+        # 合并图像路径 (现在需要加上drone_dir和satellite_dir)
         self.all_images = [os.path.join(self.drone_dir, img) for img in self.drone_images] + \
                           [os.path.join(self.satellite_dir, img) for img in self.satellite_images]
         self.all_labels = np.concatenate([self.labels, self.labels])
