@@ -142,7 +142,7 @@ class VisionMambaEncoder(nn.Module):
     """
     轻量化的Vision Mamba编码器
     """
-    def __init__(self, dim=384, num_layers=12, num_heads=6, image_size=256, patch_size=16):
+    def __init__(self, dim=384, num_layers=12, image_size=256, patch_size=16):
         super().__init__()
         self.num_patches = (image_size // patch_size) ** 2
         self.patch_embed = nn.Conv2d(3, dim, kernel_size=patch_size, stride=patch_size)
@@ -223,7 +223,6 @@ class VMambaKANFSRA(nn.Module):
         self.backbone = VisionMambaEncoder(
             dim=embed_dim,
             num_layers=depth,
-            num_heads=num_heads,
             # 其他参数使用默认值
         )
         
