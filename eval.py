@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-FSRA-VMK评估脚本
-评估训练好的Vision Mamba Kolmogorov Network模型在University-1652数据集上的性能
+FSRA-Mamba评估脚本
+评估训练好的Vision Mamba网络模型在University-1652数据集上的性能
 
 支持的评估模式：
 1. 标准评估：计算Recall@K、mAP、CMC等指标
@@ -25,7 +25,8 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 # 导入自定义模块
-from models.vmamba_kan_fsra import FSRAVMambaKAN
+# 修改导入语句，使用新的模型
+from models.fsra_mamba import FSMambaFSRA as FSRAVMambaKAN
 from dataset.university1652_dataset import University1652Dataset
 from utils.metrics import (
     compute_distance_matrix, compute_recall_at_k, 
@@ -34,10 +35,10 @@ from utils.metrics import (
 
 def parse_args():
     """解析命令行参数"""
-    parser = argparse.ArgumentParser(description='FSRA-VMK Evaluation')
+    parser = argparse.ArgumentParser(description='FSRA-Mamba Evaluation')
     
     # 基础参数
-    parser.add_argument('--config', type=str, default='configs/fsra_vmk_config.yaml',
+    parser.add_argument('--config', type=str, default='configs/fsra_mamba_config.yaml',
                         help='配置文件路径')
     parser.add_argument('--checkpoint', type=str, required=True,
                         help='模型检查点路径')

@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-FSRA-VMK训练脚本
-结合Vision Mamba和KAN技术的跨视角图像匹配模型训练
+FSRA-Mamba训练脚本
+仅使用Vision Mamba作为主干网络的跨视角图像匹配模型训练
 
-基于您的分析，实现FSRA-VMK: Vision Mamba Kolmogorov Network
+基于您的分析，实现FSRA-Mamba: Vision Mamba Network
 - O(n)线性复杂度的Vision Mamba编码器
-- Kolmogorov-Arnold Networks注意力机制
-- 双向跨视角特征对齐
+- 保持FSRA的其他组件不变
 """
 
 from __future__ import print_function, division
@@ -22,7 +21,8 @@ matplotlib.use('agg')
 import matplotlib.pyplot as plt
 import time
 import os
-from models.vmamba_kan_fsra import VMambaKANFSRA, VisionMambaEncoder, MambaBlock
+# 修改导入语句，使用新的模型
+from models.fsra_mamba import FSMambaFSRA, VisionMambaEncoder, MambaBlock
 from dataset.university1652_dataset import UniversityDataset, RandomIdentitySampler, get_transforms
 from utils.losses import CrossEntropyLabelSmooth, TripletLoss
 import yaml
@@ -34,7 +34,7 @@ from torch.utils.data import DataLoader
 def get_opts():
     parser = argparse.ArgumentParser(description='Training')
     parser.add_argument('--gpu_ids', default='0', type=str, help='gpu_ids')
-    parser.add_argument('--name', default='fsra_vmk', type=str, help='output model name')
+    parser.add_argument('--name', default='fsra_mamba', type=str, help='output model name')
     parser.add_argument('--data_dir', default='./data/train', type=str, help='training dir path')
     parser.add_argument('--batchsize', default=16, type=int, help='batchsize')
     parser.add_argument('--h', default=256, type=int, help='height')
@@ -135,13 +135,14 @@ if __name__ == '__main__':
     
     # Model
     num_classes = len(image_datasets['train'].pids)
-    model = VMambaKANFSRA(num_classes, opt.block, opt.backbone).to(device)
+    # 使用新的仅包含Mamba的模型
+    model = FSMambaFSRA(num_classes, opt.block, opt.backbone).to(device)
 
-    # Loss Functions
+    # Loss Functions (保持与FSRA相同)
     criterion_id = CrossEntropyLabelSmooth(num_classes)
     criterion_tri = TripletLoss(margin=0.3)
     
-    # Optimizer and Scheduler
+    # Optimizer and Scheduler (保持与FSRA相同)
     ignored_params = list(map(id, model.backbone.parameters()))
     base_params = filter(lambda p: id(p) not in ignored_params, model.parameters())
     
@@ -158,4 +159,4 @@ if __name__ == '__main__':
         os.makedirs(dir_name)
     
     # Train
-    model = train_model(model, criterion_id, criterion_tri, optimizer, exp_lr_scheduler, dataloaders, num_epochs=opt.num_epochs) 
+    model = train_model(model, criterion_id, criterion_tri, optimizer, exp_lr_scheduler, dataloaders, num_epochs=opt.num_epochs)
