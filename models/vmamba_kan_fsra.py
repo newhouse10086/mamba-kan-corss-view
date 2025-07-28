@@ -307,6 +307,10 @@ def create_model(num_classes: int = 701, **kwargs) -> VMambaKANFSRA:
     """创建VMamba-KAN-FSRA模型"""
     return VMambaKANFSRA(num_classes=num_classes, **kwargs)
 
+class FSRAVMambaKAN(VMambaKANFSRA):
+    """兼容旧命名：FSRAVMambaKAN 继承 VMambaKANFSRA"""
+    pass
+
 if __name__ == "__main__":
     # 测试模型
     model = create_model()
