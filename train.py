@@ -23,7 +23,8 @@ import time
 import os
 # 修改导入语句，使用新的模型
 from models.fsra_mamba import FSMambaFSRA, VisionMambaEncoder, MambaBlock
-from dataset.university1652_dataset import UniversityDataset, RandomIdentitySampler, get_transforms
+# 修改导入语句，使用FSRA官方数据集
+from dataset.university1652_dataset import make_dataset
 from utils.losses import CrossEntropyLabelSmooth, TripletLoss
 import yaml
 import math
@@ -47,12 +48,14 @@ def get_opts():
     parser.add_argument('--block', default=1, type=int, help='number of blocks')
     parser.add_argument('--backbone', default='VIT-S', type=str, help='backbone: VIT-S or VIT-B')
     parser.add_argument('--triplet_loss_weight', default=1.0, type=float, help='triplet loss weight')
+    parser.add_argument('--dataset', default='university', type=str, help='dataset name')
+    parser.add_argument('--workers', default=8, type=int, help='number of data loading workers')
     
     opt = parser.parse_args()
     return opt
 
 # --- Main Training Loop ---
-def train_model(model, criterion_id, criterion_tri, optimizer, scheduler, dataloaders, num_epochs):
+def train_model(model, criterion_id, criterion_tri, optimizer, scheduler, dataloaders, num_epochs, opt):
     since = time.time()
     for epoch in range(num_epochs):
         print('Epoch {}/{}'.format(epoch, num_epochs - 1))
@@ -64,9 +67,7 @@ def train_model(model, criterion_id, criterion_tri, optimizer, scheduler, datalo
             running_corrects = 0.0
             
             for data in tqdm(dataloaders['train']):
-                inputs, labels = data
-                inputs = inputs.to(device)
-                labels = labels.to(device)
+                inputs, labels = data[0].to(device), data[1].to(device)
                 
                 optimizer.zero_grad()
                 with torch.set_grad_enabled(True):
@@ -115,27 +116,33 @@ if __name__ == '__main__':
     cudnn.benchmark = True
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    # Dataloaders
-    image_datasets = {
-        'train': UniversityDataset(opt.data_dir, opt.h, opt.w, opt.erasing_p, opt.color_jitter)
-    }
-    
-    # --- 断言：检查数据集是否为空 ---
-    assert len(image_datasets['train']) > 0, \
-        f"Error: Training dataset is empty. Please check the data directory: {opt.data_dir}"
+    # Dataloaders - 使用FSRA官方数据集加载方式
+    train_loader, _, _, train_set_length, _, _ = make_dataset(
+        dataset=opt.dataset,
+        data_dir=opt.data_dir,
+        height=opt.h,
+        width=opt.w,
+        batch_size=opt.batchsize,
+        workers=opt.workers,
+        erasing_p=opt.erasing_p,
+        color_jitter=opt.color_jitter,
+        train_all=False,
+        sort=False
+    )
     
     dataloaders = {
-        'train': DataLoader(
-            image_datasets['train'],
-            sampler=RandomIdentitySampler(image_datasets['train'], opt.batchsize, 4),
-            batch_size=opt.batchsize,
-            num_workers=8
-        )
+        'train': train_loader
     }
     
+    # 获取类别数量 - 通过遍历数据集计算
+    all_labels = []
+    for data in train_loader:
+        all_labels.extend(data[1].tolist())
+    
+    num_classes = len(set(all_labels))
+    print(f"Number of classes: {num_classes}")
+
     # Model
-    num_classes = len(image_datasets['train'].pids)
-    # 使用新的仅包含Mamba的模型
     model = FSMambaFSRA(num_classes, opt.block, opt.backbone).to(device)
 
     # Loss Functions (保持与FSRA相同)
@@ -159,4 +166,4 @@ if __name__ == '__main__':
         os.makedirs(dir_name)
     
     # Train
-    model = train_model(model, criterion_id, criterion_tri, optimizer, exp_lr_scheduler, dataloaders, num_epochs=opt.num_epochs)
+    model = train_model(model, criterion_id, criterion_tri, optimizer, exp_lr_scheduler, dataloaders, num_epochs=opt.num_epochs, opt=opt)
