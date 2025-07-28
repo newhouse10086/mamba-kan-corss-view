@@ -65,49 +65,78 @@ class KANLinear(nn.Module):
 
 class MambaBlock(nn.Module):
     """
-    简化的Mamba块，保持接口但使用更稳定的实现
+    简化的Mamba风格块，使用稳定的Transformer架构
+    避免复杂的状态空间模型，但保持相似的功能
     """
     def __init__(self, dim: int, d_state: int = 16, d_conv: int = 4, expand: int = 2):
         super().__init__()
         self.dim = dim
-        self.d_state = d_state
-        self.d_conv = d_conv
-        self.expand = expand
-        self.d_inner = int(self.expand * self.dim)
+        self.d_inner = int(expand * dim)
         
-        # 简化为标准的Transformer-like结构，保持线性复杂度特性
-        self.norm1 = nn.LayerNorm(dim)
-        self.conv1d = nn.Conv1d(dim, dim, kernel_size=d_conv, padding=d_conv//2, groups=dim)
-        self.activation = nn.SiLU()
+        # 输入投影
+        self.in_proj = nn.Linear(dim, self.d_inner * 2, bias=False)
         
-        # 线性投影层
-        self.linear1 = nn.Linear(dim, self.d_inner)
-        self.linear2 = nn.Linear(self.d_inner, dim)
+        # 深度卷积
+        self.conv1d = nn.Conv1d(
+            in_channels=self.d_inner,
+            out_channels=self.d_inner,
+            kernel_size=d_conv,
+            bias=True,
+            groups=self.d_inner,
+            padding=d_conv - 1,
+        )
+        
+        # 激活函数
+        self.act = nn.SiLU()
+        
+        # 输出投影
+        self.out_proj = nn.Linear(self.d_inner, dim, bias=False)
         
         # Dropout
-        self.dropout = nn.Dropout(0.1)
+        self.dropout = nn.Dropout(0.0)
         
+        # 归一化
+        self.norm = nn.LayerNorm(dim)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        B, L, D = x.shape
-        residual = x
-        
-        # Layer norm
-        x = self.norm1(x)
-        
-        # 1D卷积（保持序列建模能力）
-        x_conv = rearrange(x, 'b l d -> b d l')
-        x_conv = self.conv1d(x_conv)
-        x_conv = rearrange(x_conv, 'b d l -> b l d')
-        x = self.activation(x_conv)
-        
-        # MLP层
-        x = self.linear1(x)
-        x = self.activation(x)
-        x = self.dropout(x)
-        x = self.linear2(x)
+        """
+        Args:
+            x: (batch, length, dim)
+        Returns:
+            (batch, length, dim)
+        """
+        batch, seqlen, dim = x.shape
         
         # 残差连接
-        return residual + x
+        residual = x
+        x = self.norm(x)
+        
+        # 输入投影：x -> (x1, x2)
+        xz = self.in_proj(x)  # (batch, seqlen, d_inner * 2)
+        x, z = xz.chunk(2, dim=-1)  # 每个都是 (batch, seqlen, d_inner)
+        
+        # 应用门控
+        z = self.act(z)
+        
+        # 1D卷积
+        x = rearrange(x, "b l d -> b d l")
+        x = self.conv1d(x)[..., :seqlen]  # 处理padding
+        x = rearrange(x, "b d l -> b l d")
+        
+        # 激活
+        x = self.act(x)
+        
+        # 门控融合
+        y = x * z
+        
+        # 输出投影
+        output = self.out_proj(y)
+        output = self.dropout(output)
+        
+        # 残差连接
+        output = output + residual
+        
+        return output
 
 class VisionMambaEncoder(nn.Module):
     """
