@@ -196,9 +196,10 @@ class University1652Dataset(data.Dataset):
             satellite_img = self.transform(satellite_img)
             
             return (
-                drone_img,  # 作为主图像
-                item['class_id'],
-                item['drone_path']  # 图像路径
+                drone_img,          # drone图像
+                satellite_img,      # satellite图像  
+                item['class_id'],   # 类别标签
+                item['drone_path']  # 路径（可选）
             )
         
         elif self.mode in ['query', 'gallery']:

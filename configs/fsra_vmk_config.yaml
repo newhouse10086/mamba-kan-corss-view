@@ -69,14 +69,14 @@ model:
 # 训练配置
 training:
   # 基础训练参数
-  epochs: 300
-  batch_size: 32
+  epochs: 100
+  batch_size: 32  # 降低batch_size以增加类别多样性
   num_workers: 4
   
   # 优化器配置
   optimizer:
     name: "AdamW"
-    lr: 0.01            # 基础学习率
+    lr: 0.0005            # 降低学习率，确保稳定训练
     weight_decay: 5e-4    # 权重衰减
     betas: [0.9, 0.999]   # Adam beta参数
     eps: 1e-8             # Adam epsilon参数
@@ -84,9 +84,9 @@ training:
   # 学习率调度配置
   lr_scheduler:
     name: "WarmupMultiStepLR"
-    warmup_epochs: 10     # 预热轮数
+    warmup_epochs: 5      # 较短的预热时间
     warmup_factor: 0.1    # 预热起始因子
-    milestones: [150, 250]  # 学习率衰减里程碑
+    milestones: [60, 80]  # 学习率衰减里程碑（相对较早）
     gamma: 0.1            # 衰减因子
     
   # 损失函数配置
@@ -96,21 +96,21 @@ training:
       weight: 1.0
       label_smoothing: 0.1
       
-    # 三元组损失
+    # 三元组损失 - 先降低权重
     triplet_loss:
-      weight: 1.0
+      weight: 0.1         # 大幅降低权重
       margin: 0.3
       distance: "euclidean"
       hard_mining: true
       
-    # 对比损失
+    # 对比损失 - 暂时关闭
     contrastive_loss:
-      weight: 0.5
+      weight: 0.0         # 暂时关闭
       temperature: 0.07
       
     # 中心损失（可选）
     center_loss:
-      weight: 0.0005
+      weight: 0.0
       num_classes: 1652
       feat_dim: 512
       

@@ -158,14 +158,51 @@ class FSRATrainer:
             augment=True
         )
         
-        self.train_loader = DataLoader(
-            train_dataset,
-            batch_size=self.args.batch_size,
-            shuffle=True,
-            num_workers=4,
-            pin_memory=True,
-            drop_last=True
-        )
+        # 如果启用Triplet Loss，使用类均衡采样器
+        if self.args.triplet_loss_weight > 0:
+            try:
+                from utils.sampler import RandomIdentitySampler
+                
+                # 提取训练数据的标签
+                train_labels = [item['class_id'] for item in train_dataset.data_list]
+                
+                # 创建类均衡采样器
+                train_sampler = RandomIdentitySampler(
+                    labels=train_labels,
+                    batch_size=self.args.batch_size,
+                    num_instances=4  # 每个类别4个样本
+                )
+                
+                self.train_loader = DataLoader(
+                    train_dataset,
+                    batch_sampler=train_sampler,
+                    num_workers=4,
+                    pin_memory=True
+                )
+                print("✅ 使用类均衡采样器")
+                
+            except Exception as e:
+                print(f"⚠️ 类均衡采样器初始化失败: {e}")
+                print("🔄 回退到标准随机采样")
+                
+                self.train_loader = DataLoader(
+                    train_dataset,
+                    batch_size=self.args.batch_size,
+                    shuffle=True,
+                    num_workers=4,
+                    pin_memory=True,
+                    drop_last=True
+                )
+        else:
+            # 不使用Triplet Loss时，使用标准采样
+            self.train_loader = DataLoader(
+                train_dataset,
+                batch_size=self.args.batch_size,
+                shuffle=True,
+                num_workers=4,
+                pin_memory=True,
+                drop_last=True
+            )
         
         # 测试集 - 查询集
         query_dataset = University1652Dataset(
@@ -334,19 +371,39 @@ class FSRATrainer:
         
         num_batches = len(self.train_loader)
         
-        for batch_idx, (images, labels, _) in enumerate(self.train_loader):
-            images = images.to(self.device)  # [B, C, H, W]
-            labels = labels.to(self.device)  # [B]
+        for batch_idx, batch_data in enumerate(self.train_loader):
+            # 解包数据：现在是 (drone_img, satellite_img, labels, paths)
+            if len(batch_data) == 4:  # 训练模式：有drone和satellite
+                drone_imgs, satellite_imgs, labels, _ = batch_data
+                drone_imgs = drone_imgs.to(self.device)
+                satellite_imgs = satellite_imgs.to(self.device)
+                labels = labels.to(self.device)
+                
+                # 使用drone图像进行单视图训练（先简化）
+                images = drone_imgs
+            else:  # 其他模式
+                images, labels, _ = batch_data
+                images = images.to(self.device)
+                labels = labels.to(self.device)
             
-            # 前向传播
+            # 前向传播 - 单图像输入
             outputs = self.model(images)
             logits = outputs['logits']      # [B, num_classes]
             features = outputs['features']  # [B, embed_dim]
             
-            # 计算损失
+            # 计算损失 - 先只用ID损失，确保收敛
             id_loss = self.id_loss(logits, labels)
-            triplet_loss = self.triplet_loss(features, labels)
-            contrastive_loss = self.contrastive_loss(features, labels)
+            
+            # 如果batch内有足够的样本多样性，才计算Triplet和Contrastive
+            if self.args.triplet_loss_weight > 0 and len(torch.unique(labels)) >= 2:
+                triplet_loss = self.triplet_loss(features, labels)
+            else:
+                triplet_loss = torch.tensor(0.0, device=self.device)
+            
+            if self.args.contrastive_loss_weight > 0 and len(torch.unique(labels)) >= 2:
+                contrastive_loss = self.contrastive_loss(features, labels)
+            else:
+                contrastive_loss = torch.tensor(0.0, device=self.device)
             
             # 总损失
             total_loss = (self.args.id_loss_weight * id_loss + 
@@ -356,13 +413,17 @@ class FSRATrainer:
             # 反向传播
             self.optimizer.zero_grad()
             total_loss.backward()
+            
+            # 梯度裁剪（防止梯度爆炸）
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+            
             self.optimizer.step()
             
             # 累计损失
             losses['total'] += total_loss.item()
             losses['id'] += id_loss.item()
-            losses['triplet'] += triplet_loss.item()
-            losses['contrastive'] += contrastive_loss.item()
+            losses['triplet'] += triplet_loss.item() if isinstance(triplet_loss, torch.Tensor) else triplet_loss
+            losses['contrastive'] += contrastive_loss.item() if isinstance(contrastive_loss, torch.Tensor) else contrastive_loss
             
             # 计算准确率
             with torch.no_grad():
@@ -374,15 +435,17 @@ class FSRATrainer:
             if batch_idx % 50 == 0:
                 current_acc = correct_predictions / total_predictions if total_predictions > 0 else 0.0
                 current_lr = self.scheduler.get_last_lr()[0]
+                unique_classes = len(torch.unique(labels))
                 
                 print(f"Epoch [{epoch}/{self.args.epochs}] "
                       f"Batch [{batch_idx}/{num_batches}] "
                       f"Loss: {total_loss.item():.4f} "
                       f"ID: {id_loss.item():.4f} "
-                      f"Triplet: {triplet_loss.item():.4f} "
-                      f"Contrast: {contrastive_loss.item():.4f} "
+                      f"Triplet: {triplet_loss.item() if isinstance(triplet_loss, torch.Tensor) else triplet_loss:.4f} "
+                      f"Contrast: {contrastive_loss.item() if isinstance(contrastive_loss, torch.Tensor) else contrastive_loss:.4f} "
                       f"Acc: {current_acc:.4f} "
-                      f"LR: {current_lr:.6f}")
+                      f"LR: {current_lr:.6f} "
+                      f"Classes: {unique_classes}")
         
         # 计算平均损失和准确率
         for key in losses:
@@ -526,9 +589,16 @@ def main():
 
     # 如果提供了 YAML 配置文件，加载并覆盖默认参数
     if args.config:
-        import yaml, argparse
+        import yaml, argparse, sys
         with open(args.config, 'r', encoding='utf-8') as f:
             cfg_dict = yaml.safe_load(f)
+
+        # 收集命令行显式指定的参数
+        cli_overrides = set()
+        for token in sys.argv[1:]:
+            if token.startswith('--'):
+                name = token.lstrip('-').split('=')[0]
+                cli_overrides.add(name.replace('-', '_'))
 
         # 递归扁平化字典
         def flatten_dict(d, parent_key='', sep='.'):  # simple flatten
@@ -567,7 +637,7 @@ def main():
         for key, value in flat_cfg.items():
             # 将嵌套键转换为属性名，例如 training.batch_size -> batch_size
             attr = key.split('.')[-1]
-            if hasattr(args, attr):
+            if hasattr(args, attr) and attr not in cli_overrides:
                 # 根据参数类型进行转换
                 if attr in param_types:
                     try:
