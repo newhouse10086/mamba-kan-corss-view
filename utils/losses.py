@@ -6,92 +6,52 @@ from typing import Tuple, Optional
 
 class CrossEntropyLabelSmooth(nn.Module):
     """
-    带标签平滑的交叉熵损失
+    与官方FSRA一致的标签平滑交叉熵损失
     """
-    def __init__(self, num_classes: int, epsilon: float = 0.1):
+    def __init__(self, num_classes, epsilon=0.1):
         super(CrossEntropyLabelSmooth, self).__init__()
         self.num_classes = num_classes
         self.epsilon = epsilon
         self.logsoftmax = nn.LogSoftmax(dim=1)
 
-    def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            inputs: 预测logits [N, C]
-            targets: 真实标签 [N]
-        """
+    def forward(self, inputs, targets):
         log_probs = self.logsoftmax(inputs)
-        targets = torch.zeros_like(log_probs).scatter_(1, targets.unsqueeze(1), 1)
+        targets = torch.zeros(log_probs.size()).scatter_(1, targets.unsqueeze(1).data.cpu(), 1)
+        targets = targets.to(inputs.device)
         targets = (1 - self.epsilon) * targets + self.epsilon / self.num_classes
-        loss = (-targets * log_probs).mean(0).sum()
+        loss = (- targets * log_probs).mean(0).sum()
         return loss
 
 class TripletLoss(nn.Module):
-    """支持 margin & distance 参数的三元组损失。"""
-    def __init__(self, margin: float = 0.3, distance: str = 'euclidean', **kwargs):
+    """
+    与官方FSRA一致的三元组损失（Batch Hard）
+    """
+    def __init__(self, margin=0.3):
         super(TripletLoss, self).__init__()
         self.margin = margin
-        self.distance_type = distance  # 兼容旧参数名
         self.ranking_loss = nn.MarginRankingLoss(margin=margin)
 
-    def forward(self, *inputs):
-        """支持两种调用方式：
-        1. (anchor, positive, negative)
-        2. (features, labels) -> batch-hard 三元组损失
-        """
-        if len(inputs) == 3:
-            anchor, positive, negative = inputs
-            if self.distance_type == 'euclidean':
-                distance_positive = F.pairwise_distance(anchor, positive, p=2)
-                distance_negative = F.pairwise_distance(anchor, negative, p=2)
-            elif self.distance_type == 'cosine':
-                distance_positive = 1 - F.cosine_similarity(anchor, positive)
-                distance_negative = 1 - F.cosine_similarity(anchor, negative)
-            else:
-                raise ValueError(f"Unsupported distance type: {self.distance_type}")
-            y = torch.ones_like(distance_positive)
-            return self.ranking_loss(distance_negative, distance_positive, y)
-        elif len(inputs) == 2:
-            features, labels = inputs
-            # Batch-hard triplet mining
-            dist = self._pairwise_distance(features)
-            loss = self._batch_hard_triplet_loss(dist, labels)
-            return loss
-        else:
-            raise ValueError("TripletLoss forward expects 2 or 3 inputs")
-
-    def _pairwise_distance(self, embeddings: torch.Tensor) -> torch.Tensor:
-        # 余弦或欧氏距离
-        if self.distance_type == 'euclidean':
-            dot_product = torch.mm(embeddings, embeddings.t())
-            square_norm = torch.diag(dot_product)
-            distances = square_norm.unsqueeze(0) - 2 * dot_product + square_norm.unsqueeze(1)
-            distances = torch.clamp(distances, min=0.0)
-            distances = torch.sqrt(distances + 1e-12)
-        else:  # cosine distance
-            similarities = torch.mm(F.normalize(embeddings), F.normalize(embeddings).t())
-            distances = 1 - similarities
-        return distances
-
-    def _batch_hard_triplet_loss(self, distance_matrix: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-        device = distance_matrix.device
-        labels = labels.unsqueeze(1)
-        mask_pos = (labels == labels.t()).bool()
-        mask_neg = ~mask_pos
-
-        # 对角线不算正样本
-        mask_pos.fill_diagonal_(False)
-
-        # hardest positive
-        hardest_pos_dist = (distance_matrix * mask_pos.float()).max(dim=1)[0]
-        # hardest negative
-        max_val = distance_matrix.max().item()
-        d_neg = distance_matrix.clone()
-        d_neg[~mask_neg] = max_val + 1  # large value for non-negatives
-        hardest_neg_dist = d_neg.min(dim=1)[0]
-
-        y = torch.ones_like(hardest_pos_dist)
-        loss = self.ranking_loss(hardest_neg_dist, hardest_pos_dist, y)
+    def forward(self, inputs, targets):
+        n = inputs.size(0)
+        
+        # 计算距离矩阵
+        dist = torch.pow(inputs, 2).sum(dim=1, keepdim=True).expand(n, n)
+        dist = dist + dist.t()
+        dist.addmm_(1, -2, inputs, inputs.t()) # Corrected addmm_ call
+        dist = dist.clamp(min=1e-12).sqrt()
+        
+        # Batch Hard Triplet Mining
+        mask = targets.expand(n, n).eq(targets.expand(n, n).t())
+        dist_ap, dist_an = [], []
+        for i in range(n):
+            dist_ap.append(dist[i][mask[i]].max().unsqueeze(0))
+            dist_an.append(dist[i][mask[i] == 0].min().unsqueeze(0))
+        dist_ap = torch.cat(dist_ap)
+        dist_an = torch.cat(dist_an)
+        
+        # 计算损失
+        y = torch.ones_like(dist_an)
+        loss = self.ranking_loss(dist_an, dist_ap, y)
         return loss
 
 class ContrastiveLoss(nn.Module):

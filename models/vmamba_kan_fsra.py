@@ -140,57 +140,28 @@ class MambaBlock(nn.Module):
 
 class VisionMambaEncoder(nn.Module):
     """
-    Vision Mamba编码器，结合Mamba和KAN技术
+    轻量化的Vision Mamba编码器
     """
-    def __init__(self, 
-                 dim: int = 768,
-                 num_layers: int = 12,
-                 image_size: int = 256,
-                 patch_size: int = 16,
-                 num_classes: int = 1000,
-                 d_state: int = 16):
+    def __init__(self, dim=384, num_layers=12, num_heads=6, image_size=256, patch_size=16):
         super().__init__()
-        
         self.num_patches = (image_size // patch_size) ** 2
         self.patch_embed = nn.Conv2d(3, dim, kernel_size=patch_size, stride=patch_size)
         self.pos_embed = nn.Parameter(torch.randn(1, self.num_patches, dim))
         
-        # Mamba层
         self.layers = nn.ModuleList([
-            MambaBlock(dim, d_state) for _ in range(num_layers)
+            MambaBlock(dim=dim) for _ in range(num_layers)
         ])
-        
-        # KAN层用于特征变换
-        self.kan_layers = nn.ModuleList([
-            KANLinear(dim, dim) for _ in range(num_layers // 3)
-        ])
-        
         self.norm = nn.LayerNorm(dim)
-        self.head = nn.Linear(dim, num_classes)
         
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        B, C, H, W = x.shape
-        
-        # Patch embedding
-        x = self.patch_embed(x)  # [B, dim, H/16, W/16]
+    def forward(self, x):
+        x = self.patch_embed(x)
         x = rearrange(x, 'b d h w -> b (h w) d')
         x = x + self.pos_embed
         
-        # Mamba layers with KAN enhancement
-        for i, layer in enumerate(self.layers):
+        for layer in self.layers:
             x = layer(x)
-            
-            # 每3层使用一次KAN增强
-            if i % 3 == 2 and i // 3 < len(self.kan_layers):
-                kan_layer = self.kan_layers[i // 3]
-                # 对序列进行KAN变换
-                B, L, D = x.shape
-                x_flat = x.view(-1, D)
-                x_enhanced = kan_layer(x_flat)
-                x = x_enhanced.view(B, L, D) + x  # 残差连接
         
-        x = self.norm(x)
-        return x
+        return self.norm(x)
 
 class CrossViewAlignmentModule(nn.Module):
     """
@@ -230,86 +201,59 @@ class CrossViewAlignmentModule(nn.Module):
 
 class VMambaKANFSRA(nn.Module):
     """
-    结合Vision Mamba和KAN的改进FSRA模型
+    轻量化、对齐官方FSRA参数量的VMamba-KAN模型
     """
-    def __init__(self, 
-                 image_size: int = 256,
-                 patch_size: int = 16,
-                 dim: int = 768,
-                 num_layers: int = 12,
-                 num_heads: int = 8,
-                 num_classes: int = 701,  # University-1652类别数
-                 d_state: int = 16):
+    def __init__(self, num_classes: int, block: int = 1, backbone: str = 'VIT-S'):
         super().__init__()
         
-        # Vision Mamba编码器
-        self.encoder = VisionMambaEncoder(
-            dim=dim,
-            num_layers=num_layers,
-            image_size=image_size,
-            patch_size=patch_size,
-            num_classes=num_classes,
-            d_state=d_state
+        # 参数映射
+        if backbone == 'VIT-S':
+            embed_dim = 384
+            depth = 12
+            num_heads = 6
+        elif backbone == 'VIT-B':
+            embed_dim = 768
+            depth = 12
+            num_heads = 12
+        else: # 默认使用轻量级
+            embed_dim = 256
+            depth = 8
+            num_heads = 4
+        
+        self.backbone = VisionMambaEncoder(
+            dim=embed_dim,
+            num_layers=depth,
+            num_heads=num_heads,
+            # 其他参数使用默认值
         )
         
-        # 跨视角对齐模块
-        self.cross_view_align = CrossViewAlignmentModule(dim, num_heads)
-        
-        # 特征融合
-        self.fusion_kan = KANLinear(dim * 2, dim)
-        
-        # 分类头
         self.classifier = nn.Sequential(
-            nn.LayerNorm(dim),
-            nn.Linear(dim, dim // 2),
+            nn.Linear(embed_dim * block, 512),
+            nn.BatchNorm1d(512),
             nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(dim // 2, num_classes)
+            nn.Dropout(0.5),
+            nn.Linear(512, num_classes)
         )
+        self.block = block
+
+    def forward(self, x):
+        x = self.backbone(x)
         
-        # 全局平均池化
-        self.global_pool = nn.AdaptiveAvgPool1d(1)
+        # 官方实现中的分块池化
+        features = []
+        for i in range(self.block):
+            start = i * (x.size(1) // self.block)
+            end = (i + 1) * (x.size(1) // self.block)
+            features.append(x[:, start:end, :].mean(dim=1))
         
-    def forward(self, satellite_img: torch.Tensor, drone_img: Optional[torch.Tensor] = None):
-        """前向传播
-        兼容两种调用方式：
-        1. 单输入 (用于分类/特征抽取)：model(img) -> {'logits': logits, 'features': feat}
-        2. 双输入 (跨视角对齐)：model(sat_img, drone_img) -> tuple 同原设计
-        """
-        # 如果只提供一个输入张量，则执行单视角特征提取/分类逻辑
-        if drone_img is None:
-            # 编码特征
-            feat = self.encoder(satellite_img)           # [B, num_patches, dim]
-            global_feat = self.global_pool(feat.transpose(1, 2)).squeeze(-1)  # [B, dim]
-            logits = self.classifier(global_feat)
-            return {
-                'logits': logits,       # 分类 logits [B, num_classes]
-                'features': global_feat # 全局特征 [B, dim]
-            }
+        feat = torch.cat(features, dim=1)
+        logits = self.classifier(feat)
+        return logits, feat
 
-        # ---- 双输入跨视角对齐 ----
-        sat_feat = self.encoder(satellite_img)  # [B, num_patches, dim]
-        drone_feat = self.encoder(drone_img)    # [B, num_patches, dim]
-
-        # 跨视角对齐
-        sat_aligned = self.cross_view_align(sat_feat, drone_feat, drone_feat)
-        drone_aligned = self.cross_view_align(drone_feat, sat_feat, sat_feat)
-
-        # 特征融合
-        sat_fused = self.fusion_kan(torch.cat([sat_feat, sat_aligned], dim=-1))
-        drone_fused = self.fusion_kan(torch.cat([drone_feat, drone_aligned], dim=-1))
-
-        # 全局特征
-        sat_global = self.global_pool(sat_fused.transpose(1, 2)).squeeze(-1)
-        drone_global = self.global_pool(drone_fused.transpose(1, 2)).squeeze(-1)
-
-        # 分类
-        sat_logits = self.classifier(sat_global)
-        drone_logits = self.classifier(drone_global)
-
-        return (
-            sat_logits, drone_logits, sat_global, drone_global
-        )
+# VisionMambaEncoder 和其他依赖组件需要保留或相应简化
+class VisionMambaEncoder(nn.Module):
+    # ... (保持之前的简化实现或进一步轻量化) ...
+    pass
 
 def create_model(num_classes: int = 701, **kwargs) -> VMambaKANFSRA:
     """创建VMamba-KAN-FSRA模型"""
