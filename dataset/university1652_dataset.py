@@ -74,8 +74,9 @@ class UniversityDataset(Dataset):
         self.drone_dir = os.path.join(data_dir, 'drone')
         self.satellite_dir = os.path.join(data_dir, 'satellite')
         
-        self.drone_images = sorted(os.listdir(self.drone_dir))
-        self.satellite_images = sorted(os.listdir(self.satellite_dir))
+        # 过滤非图像文件
+        self.drone_images = sorted([f for f in os.listdir(self.drone_dir) if f.endswith(('.jpg', '.jpeg', '.png'))])
+        self.satellite_images = sorted([f for f in os.listdir(self.satellite_dir) if f.endswith(('.jpg', '.jpeg', '.png'))])
         
         # 标签和相机ID
         self.labels = np.array([int(img.split('_')[0]) for img in self.drone_images])
