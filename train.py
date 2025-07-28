@@ -76,7 +76,7 @@ def parse_args():
                         help='批次大小')
     parser.add_argument('--epochs', type=int, default=300,
                         help='训练轮数')
-    parser.add_argument('--lr', type=float, default=0.0001,
+    parser.add_argument('--lr', type=float, default=0.01,
                         help='学习率')
     parser.add_argument('--weight_decay', type=float, default=5e-4,
                         help='权重衰减')
@@ -328,6 +328,10 @@ class FSRATrainer:
             'contrastive': 0.0
         }
         
+        # 添加准确率统计
+        correct_predictions = 0
+        total_predictions = 0
+        
         num_batches = len(self.train_loader)
         
         for batch_idx, (images, labels, _) in enumerate(self.train_loader):
@@ -360,18 +364,34 @@ class FSRATrainer:
             losses['triplet'] += triplet_loss.item()
             losses['contrastive'] += contrastive_loss.item()
             
-            # 打印进度
+            # 计算准确率
+            with torch.no_grad():
+                predictions = torch.argmax(logits, dim=1)
+                correct_predictions += (predictions == labels).sum().item()
+                total_predictions += labels.size(0)
+            
+            # 打印进度（每50个batch）
             if batch_idx % 50 == 0:
+                current_acc = correct_predictions / total_predictions if total_predictions > 0 else 0.0
+                current_lr = self.scheduler.get_last_lr()[0]
+                
                 print(f"Epoch [{epoch}/{self.args.epochs}] "
                       f"Batch [{batch_idx}/{num_batches}] "
                       f"Loss: {total_loss.item():.4f} "
                       f"ID: {id_loss.item():.4f} "
                       f"Triplet: {triplet_loss.item():.4f} "
-                      f"Contrast: {contrastive_loss.item():.4f}")
+                      f"Contrast: {contrastive_loss.item():.4f} "
+                      f"Acc: {current_acc:.4f} "
+                      f"LR: {current_lr:.6f}")
         
-        # 计算平均损失
+        # 计算平均损失和准确率
         for key in losses:
             losses[key] /= num_batches
+        
+        final_acc = correct_predictions / total_predictions if total_predictions > 0 else 0.0
+        losses['accuracy'] = final_acc
+        
+        print(f"📊 Epoch {epoch} 训练完成 - 平均损失: {losses['total']:.4f}, 准确率: {final_acc:.4f}")
         
         return losses
     
@@ -465,6 +485,10 @@ class FSRATrainer:
             for loss_name, loss_value in train_losses.items():
                 self.writer.add_scalar(f'Train/Loss_{loss_name}', loss_value, epoch)
             self.writer.add_scalar('Train/LearningRate', current_lr, epoch)
+            
+            # 记录训练准确率
+            if 'accuracy' in train_losses:
+                self.writer.add_scalar('Train/Accuracy', train_losses['accuracy'], epoch)
             
             # 评估模型
             if (epoch + 1) % self.args.eval_step == 0 or epoch == self.args.epochs - 1:
