@@ -27,58 +27,115 @@ class CrossEntropyLabelSmooth(nn.Module):
         return loss
 
 class TripletLoss(nn.Module):
-    """
-    三元组损失函数
-    """
-    def __init__(self, margin: float = 0.3, distance_type: str = 'euclidean'):
+    """支持 margin & distance 参数的三元组损失。"""
+    def __init__(self, margin: float = 0.3, distance: str = 'euclidean', **kwargs):
         super(TripletLoss, self).__init__()
         self.margin = margin
-        self.distance_type = distance_type
+        self.distance_type = distance  # 兼容旧参数名
         self.ranking_loss = nn.MarginRankingLoss(margin=margin)
 
-    def forward(self, anchor: torch.Tensor, positive: torch.Tensor, negative: torch.Tensor) -> torch.Tensor:
+    def forward(self, *inputs):
+        """支持两种调用方式：
+        1. (anchor, positive, negative)
+        2. (features, labels) -> batch-hard 三元组损失
         """
-        Args:
-            anchor: anchor特征 [N, D]
-            positive: positive特征 [N, D]  
-            negative: negative特征 [N, D]
-        """
-        if self.distance_type == 'euclidean':
-            distance_positive = F.pairwise_distance(anchor, positive, p=2)
-            distance_negative = F.pairwise_distance(anchor, negative, p=2)
-        elif self.distance_type == 'cosine':
-            distance_positive = 1 - F.cosine_similarity(anchor, positive)
-            distance_negative = 1 - F.cosine_similarity(anchor, negative)
+        if len(inputs) == 3:
+            anchor, positive, negative = inputs
+            if self.distance_type == 'euclidean':
+                distance_positive = F.pairwise_distance(anchor, positive, p=2)
+                distance_negative = F.pairwise_distance(anchor, negative, p=2)
+            elif self.distance_type == 'cosine':
+                distance_positive = 1 - F.cosine_similarity(anchor, positive)
+                distance_negative = 1 - F.cosine_similarity(anchor, negative)
+            else:
+                raise ValueError(f"Unsupported distance type: {self.distance_type}")
+            y = torch.ones_like(distance_positive)
+            return self.ranking_loss(distance_negative, distance_positive, y)
+        elif len(inputs) == 2:
+            features, labels = inputs
+            # Batch-hard triplet mining
+            dist = self._pairwise_distance(features)
+            loss = self._batch_hard_triplet_loss(dist, labels)
+            return loss
         else:
-            raise ValueError(f"Unsupported distance type: {self.distance_type}")
-        
-        y = torch.ones_like(distance_positive)
-        loss = self.ranking_loss(distance_negative, distance_positive, y)
+            raise ValueError("TripletLoss forward expects 2 or 3 inputs")
+
+    def _pairwise_distance(self, embeddings: torch.Tensor) -> torch.Tensor:
+        # 余弦或欧氏距离
+        if self.distance_type == 'euclidean':
+            dot_product = torch.mm(embeddings, embeddings.t())
+            square_norm = torch.diag(dot_product)
+            distances = square_norm.unsqueeze(0) - 2 * dot_product + square_norm.unsqueeze(1)
+            distances = torch.clamp(distances, min=0.0)
+            distances = torch.sqrt(distances + 1e-12)
+        else:  # cosine distance
+            similarities = torch.mm(F.normalize(embeddings), F.normalize(embeddings).t())
+            distances = 1 - similarities
+        return distances
+
+    def _batch_hard_triplet_loss(self, distance_matrix: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        device = distance_matrix.device
+        labels = labels.unsqueeze(1)
+        mask_pos = (labels == labels.t()).bool()
+        mask_neg = ~mask_pos
+
+        # 对角线不算正样本
+        mask_pos.fill_diagonal_(False)
+
+        # hardest positive
+        hardest_pos_dist = (distance_matrix * mask_pos.float()).max(dim=1)[0]
+        # hardest negative
+        max_val = distance_matrix.max().item()
+        d_neg = distance_matrix.clone()
+        d_neg[~mask_neg] = max_val + 1  # large value for non-negatives
+        hardest_neg_dist = d_neg.min(dim=1)[0]
+
+        y = torch.ones_like(hardest_pos_dist)
+        loss = self.ranking_loss(hardest_neg_dist, hardest_pos_dist, y)
         return loss
 
 class ContrastiveLoss(nn.Module):
-    """
-    对比损失函数
-    """
-    def __init__(self, margin: float = 1.0):
+    """对比损失：兼容 margin 或 temperature 参数"""
+    def __init__(self, margin: float = 1.0, temperature: float = None, **kwargs):
         super(ContrastiveLoss, self).__init__()
-        self.margin = margin
+        # 如果传入 temperature 则使用 temperature 作为缩放因子
+        self.margin = temperature if temperature is not None else margin
 
-    def forward(self, feat1: torch.Tensor, feat2: torch.Tensor, label: torch.Tensor) -> torch.Tensor:
+    def forward(self, *inputs):
+        """支持两种调用方式：
+        1. (feat1, feat2, label_binary)
+        2. (features, labels) 使用 InfoNCE 监督对比
         """
-        Args:
-            feat1: 第一个特征 [N, D]
-            feat2: 第二个特征 [N, D]
-            label: 标签，1表示同类，0表示不同类 [N]
-        """
-        euclidean_distance = F.pairwise_distance(feat1, feat2, p=2)
-        
-        loss_contrastive = torch.mean(
-            label * torch.pow(euclidean_distance, 2) +
-            (1 - label) * torch.pow(torch.clamp(self.margin - euclidean_distance, min=0.0), 2)
-        )
-        
-        return loss_contrastive
+        if len(inputs) == 3:
+            feat1, feat2, label = inputs
+            euclidean_distance = F.pairwise_distance(feat1, feat2, p=2)
+            loss_contrastive = torch.mean(
+                label * torch.pow(euclidean_distance, 2) +
+                (1 - label) * torch.pow(torch.clamp(self.margin - euclidean_distance, min=0.0), 2)
+            )
+            return loss_contrastive
+        elif len(inputs) == 2:
+            features, labels = inputs
+            return self._supervised_contrastive_loss(features, labels)
+        else:
+            raise ValueError("ContrastiveLoss forward expects 2 or 3 inputs")
+
+    def _supervised_contrastive_loss(self, features: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        # InfoNCE 风格的监督对比学习 (简化版)
+        device = features.device
+        batch_size = features.size(0)
+        features = F.normalize(features, dim=1)
+        similarity_matrix = torch.matmul(features, features.t()) / self.margin  # 使用 margin 作为温度
+        labels = labels.contiguous().view(-1, 1)
+        mask = torch.eq(labels, labels.T).float().to(device)
+        logits_mask = torch.ones_like(mask) - torch.eye(batch_size, device=device)
+        mask = mask * logits_mask
+
+        exp_sim = torch.exp(similarity_matrix) * logits_mask
+        log_prob = similarity_matrix - torch.log(exp_sim.sum(dim=1, keepdim=True) + 1e-12)
+        mean_log_prob_pos = (mask * log_prob).sum(dim=1) / mask.sum(dim=1).clamp(min=1.0)
+        loss = -mean_log_prob_pos.mean()
+        return loss
 
 class CenterLoss(nn.Module):
     """

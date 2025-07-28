@@ -41,47 +41,52 @@ def compute_distance_matrix(query_features: torch.Tensor,
     
     return dist_mat
 
-def compute_cmc(dist_mat: torch.Tensor, 
-                query_labels: torch.Tensor, 
-                gallery_labels: torch.Tensor,
-                max_rank: int = 50) -> np.ndarray:
-    """
-    计算累积匹配特征曲线 (CMC)
-    
-    Args:
-        dist_mat: 距离矩阵 [N_q, N_g]
-        query_labels: 查询标签 [N_q]
-        gallery_labels: 画廊标签 [N_g]
-        max_rank: 最大rank
-    
-    Returns:
-        cmc: CMC曲线 [max_rank]
-    """
+# -------------- CMC 基于距离矩阵的实现 --------------
+
+def _compute_cmc_from_dist(dist_mat: torch.Tensor,
+                           query_labels: torch.Tensor,
+                           gallery_labels: torch.Tensor,
+                           max_rank: int = 50) -> np.ndarray:
+    """基于距离矩阵的CMC实现（原始实现）"""
     num_q, num_g = dist_mat.shape
-    
+
     if num_g < max_rank:
         max_rank = num_g
         print(f"Warning: Gallery size ({num_g}) is smaller than max_rank ({max_rank})")
-    
+
     # 排序获得索引
-    indices = torch.argsort(dist_mat, dim=1)  # [N_q, N_g]
-    
-    # 计算匹配情况
+    indices = torch.argsort(dist_mat, dim=1)
     matches = (gallery_labels[indices] == query_labels.unsqueeze(1)).cpu().numpy()
-    
-    # 初始化CMC
+
     cmc = np.zeros(max_rank)
-    
     for i in range(num_q):
-        # 找到第一个匹配的位置
         first_match = np.where(matches[i])[0]
         if len(first_match) > 0:
             first_match_idx = first_match[0]
             if first_match_idx < max_rank:
                 cmc[first_match_idx:] += 1
-    
     cmc = cmc / num_q
     return cmc
+
+# -------------- 通用包装器 --------------
+
+def compute_cmc(query_features_or_dist: torch.Tensor,
+                gallery_features: Optional[torch.Tensor] = None,
+                query_labels: Optional[torch.Tensor] = None,
+                gallery_labels: Optional[torch.Tensor] = None,
+                max_rank: int = 50,
+                metric: str = 'euclidean') -> np.ndarray:
+    """通用 CMC 计算函数，兼容特征或距离矩阵两种输入"""
+    if gallery_features is None and query_labels is not None and gallery_labels is not None:
+        # 旧接口：直接传入距离矩阵
+        return _compute_cmc_from_dist(query_features_or_dist, query_labels, gallery_labels, max_rank)
+
+    if gallery_features is not None and query_labels is not None and gallery_labels is not None:
+        # 新接口：传入特征，需先计算距离矩阵
+        dist_mat = compute_distance_matrix(query_features_or_dist, gallery_features, metric)
+        return _compute_cmc_from_dist(dist_mat, query_labels, gallery_labels, max_rank)
+
+    raise ValueError("Invalid arguments for compute_cmc: please provide either (dist_mat, query_labels, gallery_labels) or (query_features, gallery_features, query_labels, gallery_labels)")
 
 def compute_ap(dist_mat: torch.Tensor, 
                query_labels: torch.Tensor, 
@@ -423,6 +428,47 @@ def analyze_failure_cases(query_features: torch.Tensor,
     failure_cases.sort(key=lambda x: x['predicted_distance'] / x['correct_min_distance'])
     
     return failure_cases[:num_cases]
+
+def compute_recall_at_k(query_features: torch.Tensor,
+                       gallery_features: torch.Tensor,
+                       query_labels: torch.Tensor,
+                       gallery_labels: torch.Tensor,
+                       k: int = 1,
+                       metric: str = 'euclidean') -> float:
+    """计算 Recall@K
+    Args:
+        query_features: 查询特征 [N_q, D]
+        gallery_features: 画廊特征 [N_g, D]
+        query_labels: 查询标签 [N_q]
+        gallery_labels: 画廊标签 [N_g]
+        k: K 值
+        metric: 距离度量方式
+    Returns:
+        recall_k: Recall@K 值 (0~1)
+    """
+    # 计算距离矩阵
+    dist_mat = compute_distance_matrix(query_features, gallery_features, metric)
+    
+    # 取最小的 K 个索引
+    topk_indices = torch.topk(dist_mat, k, largest=False).indices  # [N_q, K]
+    # 检查是否命中正确标签
+    matches = (gallery_labels[topk_indices] == query_labels.unsqueeze(1))
+    recall_k = matches.any(dim=1).float().mean().item()
+    return recall_k
+
+
+def compute_map(query_features: torch.Tensor,
+               gallery_features: torch.Tensor,
+               query_labels: torch.Tensor,
+               gallery_labels: torch.Tensor,
+               metric: str = 'euclidean') -> float:
+    """计算 mAP (mean Average Precision)
+    Args 与 compute_recall_at_k 相同
+    Returns:
+        mAP 值 (0~1)
+    """
+    dist_mat = compute_distance_matrix(query_features, gallery_features, metric)
+    return compute_ap(dist_mat, query_labels, gallery_labels)
 
 if __name__ == "__main__":
     # 测试评估指标

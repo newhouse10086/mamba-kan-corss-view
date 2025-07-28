@@ -271,37 +271,46 @@ class VMambaKANFSRA(nn.Module):
         # 全局平均池化
         self.global_pool = nn.AdaptiveAvgPool1d(1)
         
-    def forward(self, satellite_img: torch.Tensor, drone_img: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, satellite_img: torch.Tensor, drone_img: Optional[torch.Tensor] = None):
+        """前向传播
+        兼容两种调用方式：
+        1. 单输入 (用于分类/特征抽取)：model(img) -> {'logits': logits, 'features': feat}
+        2. 双输入 (跨视角对齐)：model(sat_img, drone_img) -> tuple 同原设计
         """
-        前向传播
-        Args:
-            satellite_img: 卫星图像 [B, 3, H, W]
-            drone_img: 无人机图像 [B, 3, H, W]
-        Returns:
-            satellite_feat: 卫星图像特征
-            drone_feat: 无人机图像特征
-        """
-        # 编码特征
+        # 如果只提供一个输入张量，则执行单视角特征提取/分类逻辑
+        if drone_img is None:
+            # 编码特征
+            feat = self.encoder(satellite_img)           # [B, num_patches, dim]
+            global_feat = self.global_pool(feat.transpose(1, 2)).squeeze(-1)  # [B, dim]
+            logits = self.classifier(global_feat)
+            return {
+                'logits': logits,       # 分类 logits [B, num_classes]
+                'features': global_feat # 全局特征 [B, dim]
+            }
+
+        # ---- 双输入跨视角对齐 ----
         sat_feat = self.encoder(satellite_img)  # [B, num_patches, dim]
         drone_feat = self.encoder(drone_img)    # [B, num_patches, dim]
-        
+
         # 跨视角对齐
         sat_aligned = self.cross_view_align(sat_feat, drone_feat, drone_feat)
         drone_aligned = self.cross_view_align(drone_feat, sat_feat, sat_feat)
-        
+
         # 特征融合
         sat_fused = self.fusion_kan(torch.cat([sat_feat, sat_aligned], dim=-1))
         drone_fused = self.fusion_kan(torch.cat([drone_feat, drone_aligned], dim=-1))
-        
-        # 全局特征提取
-        sat_global = self.global_pool(sat_fused.transpose(1, 2)).squeeze(-1)  # [B, dim]
-        drone_global = self.global_pool(drone_fused.transpose(1, 2)).squeeze(-1)  # [B, dim]
-        
+
+        # 全局特征
+        sat_global = self.global_pool(sat_fused.transpose(1, 2)).squeeze(-1)
+        drone_global = self.global_pool(drone_fused.transpose(1, 2)).squeeze(-1)
+
         # 分类
         sat_logits = self.classifier(sat_global)
         drone_logits = self.classifier(drone_global)
-        
-        return sat_logits, drone_logits, sat_global, drone_global
+
+        return (
+            sat_logits, drone_logits, sat_global, drone_global
+        )
 
 def create_model(num_classes: int = 701, **kwargs) -> VMambaKANFSRA:
     """创建VMamba-KAN-FSRA模型"""
