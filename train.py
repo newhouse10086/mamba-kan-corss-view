@@ -166,11 +166,11 @@ class FSRATrainer:
                 # 提取训练数据的标签
                 train_labels = [item['class_id'] for item in train_dataset.data_list]
                 
-                # 创建类均衡采样器
-                train_sampler = RandomIdentitySampler(
+                # 创建类均衡采样器 - 使用更简单的版本
+                train_sampler = BalancedBatchSampler(
                     labels=train_labels,
                     batch_size=self.args.batch_size,
-                    num_instances=4  # 每个类别4个样本
+                    samples_per_class=4  # 每个类别4个样本
                 )
                 
                 self.train_loader = DataLoader(

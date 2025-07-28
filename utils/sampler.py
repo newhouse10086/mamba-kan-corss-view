@@ -13,19 +13,16 @@ class BalancedBatchSampler(torch.utils.data.Sampler):
     def __init__(self, 
                  labels: List[int], 
                  batch_size: int, 
-                 samples_per_class: int = 4,
-                 drop_last: bool = True):
+                 samples_per_class: int = 4):
         """
         Args:
             labels: 所有样本的标签列表
             batch_size: 批次大小
             samples_per_class: 每个类别在一个batch中的样本数
-            drop_last: 是否丢弃最后不完整的batch
         """
         self.labels = np.array(labels)
         self.batch_size = batch_size
         self.samples_per_class = samples_per_class
-        self.drop_last = drop_last
         
         # 计算每个batch需要多少个类别
         self.classes_per_batch = batch_size // samples_per_class
@@ -39,69 +36,34 @@ class BalancedBatchSampler(torch.utils.data.Sampler):
         self.classes = list(self.class_to_indices.keys())
         
         # 过滤掉样本数不足的类别
-        valid_classes = []
-        for cls in self.classes:
-            if len(self.class_to_indices[cls]) >= samples_per_class:
-                valid_classes.append(cls)
-        self.classes = valid_classes
+        self.valid_classes = [c for c in self.classes if len(self.class_to_indices[c]) >= samples_per_class]
         
-        print(f"BalancedBatchSampler: {len(self.classes)} valid classes, "
-              f"{self.classes_per_batch} classes per batch, "
-              f"{samples_per_class} samples per class")
+        if len(self.valid_classes) < self.classes_per_batch:
+            raise ValueError(f"Not enough valid classes to form a batch. "
+                             f"Need {self.classes_per_batch} classes, but only {len(self.valid_classes)} have >= {samples_per_class} samples.")
+        
+        # 估算每个epoch的迭代次数
+        self.num_iterations = sum(len(self.class_to_indices[c]) for c in self.valid_classes) // batch_size
     
     def __iter__(self) -> Iterator[List[int]]:
-        # 为每个类别创建样本索引的循环迭代器
-        class_iterators = {}
-        for cls in self.classes:
-            indices = self.class_to_indices[cls].copy()
-            np.random.shuffle(indices)
-            class_iterators[cls] = iter(indices * ((len(indices) // len(indices)) + 1))
-        
-        # 生成batch
-        while True:
-            batch_indices = []
+        """生成一个epoch的批次"""
+        for _ in range(self.num_iterations):
+            batch = []
             
-            # 随机选择classes_per_batch个类别
-            selected_classes = np.random.choice(
-                self.classes, 
-                size=min(self.classes_per_batch, len(self.classes)), 
-                replace=False
-            )
+            # 随机选择类别
+            selected_classes = np.random.choice(self.valid_classes, self.classes_per_batch, replace=False)
             
-            # 从每个选中的类别中采样samples_per_class个样本
+            # 从每个类别中随机采样
             for cls in selected_classes:
-                try:
-                    for _ in range(self.samples_per_class):
-                        idx = next(class_iterators[cls])
-                        batch_indices.append(idx)
-                except StopIteration:
-                    # 重新shuffle该类别的索引
-                    indices = self.class_to_indices[cls].copy()
-                    np.random.shuffle(indices)
-                    class_iterators[cls] = iter(indices * 10)  # 重复多次避免频繁重新创建
-                    for _ in range(self.samples_per_class):
-                        idx = next(class_iterators[cls])
-                        batch_indices.append(idx)
+                indices = self.class_to_indices[cls]
+                selected_indices = np.random.choice(indices, self.samples_per_class, replace=False)
+                batch.extend(selected_indices)
             
-            # 如果batch不够大，随机填充
-            while len(batch_indices) < self.batch_size:
-                cls = np.random.choice(selected_classes)
-                try:
-                    idx = next(class_iterators[cls])
-                    batch_indices.append(idx)
-                except StopIteration:
-                    indices = self.class_to_indices[cls].copy()
-                    np.random.shuffle(indices)
-                    class_iterators[cls] = iter(indices * 10)
-                    idx = next(class_iterators[cls])
-                    batch_indices.append(idx)
-            
-            yield batch_indices[:self.batch_size]
+            np.random.shuffle(batch)
+            yield batch
     
     def __len__(self) -> int:
-        # 估算每个epoch的batch数量
-        total_samples = sum(len(indices) for indices in self.class_to_indices.values())
-        return total_samples // self.batch_size
+        return self.num_iterations
 
 
 class RandomIdentitySampler(torch.utils.data.Sampler):
