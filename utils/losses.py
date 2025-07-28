@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
+from typing import Tuple, Optional
 
 class TripletLoss(nn.Module):
     """Triplet loss with hard positive/negative mining.
