@@ -96,6 +96,50 @@ class University1652Dataset(data.Dataset):
                             'class_name': class_name
                         })
         
+        elif self.mode == 'query':
+            # 查询模式：根据查询模式加载查询图像
+            if self.query_mode == 'drone_to_satellite':
+                query_dir = os.path.join(self.data_dir, 'test', 'query_drone')
+            else:  # satellite_to_drone
+                query_dir = os.path.join(self.data_dir, 'test', 'query_satellite')
+            
+            if os.path.exists(query_dir):
+                # 获取所有类别
+                classes = sorted([d for d in os.listdir(query_dir) if os.path.isdir(os.path.join(query_dir, d))])
+                
+                for class_id, class_name in enumerate(classes):
+                    query_class_dir = os.path.join(query_dir, class_name)
+                    if os.path.exists(query_class_dir):
+                        query_images = [f for f in os.listdir(query_class_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+                        for img in query_images:
+                            data_list.append({
+                                'image_path': os.path.join(query_class_dir, img),
+                                'class_id': class_id,
+                                'class_name': class_name
+                            })
+        
+        elif self.mode == 'gallery':
+            # 画廊模式：根据查询模式加载画廊图像
+            if self.query_mode == 'drone_to_satellite':
+                gallery_dir = os.path.join(self.data_dir, 'test', 'gallery_satellite')
+            else:  # satellite_to_drone
+                gallery_dir = os.path.join(self.data_dir, 'test', 'gallery_drone')
+            
+            if os.path.exists(gallery_dir):
+                # 获取所有类别
+                classes = sorted([d for d in os.listdir(gallery_dir) if os.path.isdir(os.path.join(gallery_dir, d))])
+                
+                for class_id, class_name in enumerate(classes):
+                    gallery_class_dir = os.path.join(gallery_dir, class_name)
+                    if os.path.exists(gallery_class_dir):
+                        gallery_images = [f for f in os.listdir(gallery_class_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+                        for img in gallery_images:
+                            data_list.append({
+                                'image_path': os.path.join(gallery_class_dir, img),
+                                'class_id': class_id,
+                                'class_name': class_name
+                            })
+
         elif self.mode == 'test':
             # 测试模式：根据查询模式加载数据
             if self.query_mode == 'drone_to_satellite':
@@ -151,25 +195,33 @@ class University1652Dataset(data.Dataset):
             drone_img = self.transform(drone_img)
             satellite_img = self.transform(satellite_img)
             
-            return {
-                'drone_img': drone_img,
-                'satellite_img': satellite_img,
-                'class_id': item['class_id'],
-                'class_name': item['class_name']
-            }
+            return (
+                drone_img,  # 作为主图像
+                item['class_id'],
+                item['drone_path']  # 图像路径
+            )
+        
+        elif self.mode in ['query', 'gallery']:
+            # 查询/画廊模式：返回单个图像
+            img = Image.open(item['image_path']).convert('RGB')
+            img = self.transform(img)
+            
+            return (
+                img,
+                item['class_id'],
+                item['image_path']
+            )
         
         else:  # test mode
             # 测试模式：返回单个图像
             img = Image.open(item['image_path']).convert('RGB')
             img = self.transform(img)
             
-            return {
-                'image': img,
-                'class_id': item['class_id'],
-                'class_name': item['class_name'],
-                'is_query': item['is_query'],
-                'image_path': item['image_path']
-            }
+            return (
+                img,
+                item['class_id'],
+                item['image_path']
+            )
 
 class TripletDataset(data.Dataset):
     """

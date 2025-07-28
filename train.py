@@ -211,11 +211,11 @@ class FSRATrainer:
         
         self.model = FSRAVMambaKAN(
             num_classes=self.args.num_classes,
-            embed_dim=self.args.embed_dim,
-            depth=self.args.depth,
-            kan_grid_size=self.args.kan_grid_size,
+            dim=self.args.embed_dim,  # embed_dim -> dim
+            num_layers=self.args.depth,  # depth -> num_layers
             num_heads=self.args.num_heads,
             image_size=self.args.image_size
+            # kan_grid_size 参数在模型内部固定，不需要外部传入
         ).to(self.device)
         
         # 统计参数量
