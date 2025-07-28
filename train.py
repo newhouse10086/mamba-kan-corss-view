@@ -519,10 +519,38 @@ def main():
 
         flat_cfg = flatten_dict(cfg_dict)
 
+        # 参数类型映射
+        param_types = {
+            'batch_size': int,
+            'epochs': int,
+            'lr': float,
+            'weight_decay': float,
+            'warmup_epochs': int,
+            'embed_dim': int,
+            'depth': int,
+            'num_heads': int,
+            'num_classes': int,
+            'image_size': int,
+            'kan_grid_size': int,
+            'eval_step': int,
+            'save_step': int,
+            'seed': int,
+            'id_loss_weight': float,
+            'triplet_loss_weight': float,
+            'contrastive_loss_weight': float,
+        }
+
         for key, value in flat_cfg.items():
             # 将嵌套键转换为属性名，例如 training.batch_size -> batch_size
             attr = key.split('.')[-1]
             if hasattr(args, attr):
+                # 根据参数类型进行转换
+                if attr in param_types:
+                    try:
+                        value = param_types[attr](value)
+                    except (ValueError, TypeError):
+                        print(f"⚠️ 警告: 无法将 {attr} = {value} 转换为 {param_types[attr].__name__}")
+                        continue
                 setattr(args, attr, value)
         print(f"🔧 从配置文件 {args.config} 加载参数并覆盖默认值")
     
