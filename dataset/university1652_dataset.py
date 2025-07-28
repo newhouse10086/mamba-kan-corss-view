@@ -57,6 +57,7 @@ class University1652_Dataset(data.Dataset):
         self.image_paths = []
         self.image_labels = []
         self.cam_ids = []
+        self.label_mapping = {}  # 添加标签映射
         self.load_dataset()
         
     def load_dataset(self):
@@ -67,6 +68,13 @@ class University1652_Dataset(data.Dataset):
                 self.load_university_eval()
         else:
             print('unknow dataset mode!')
+        
+        # 创建标签映射，确保标签是连续的且从0开始
+        unique_labels = sorted(list(set(self.image_labels)))
+        self.label_mapping = {label: idx for idx, label in enumerate(unique_labels)}
+        # 应用标签映射
+        self.image_labels = [self.label_mapping[label] for label in self.image_labels]
+        print(f"Dataset {self.mode}: {len(self.image_paths)} images, {len(unique_labels)} classes, label range 0 to {len(unique_labels)-1}")
 
     def load_university_train(self):
         # 处理University-1652数据集结构
@@ -85,6 +93,11 @@ class University1652_Dataset(data.Dataset):
         if not os.path.exists(drone_dir):
             drone_dir = os.path.join(train_dir, 'gallery_drone')
             
+        # 确保目录存在
+        if not os.path.exists(satellite_dir) or not os.path.exists(drone_dir):
+            print(f"Warning: satellite_dir ({satellite_dir}) or drone_dir ({drone_dir}) does not exist")
+            return
+            
         sub_dirs = [d for d in os.listdir(satellite_dir) if os.path.isdir(os.path.join(satellite_dir, d))]
         if self.sort:
             sub_dirs.sort()
@@ -92,6 +105,7 @@ class University1652_Dataset(data.Dataset):
             random.shuffle(sub_dirs)
         
         for id_name in sub_dirs:
+            # 确保两个视角都有这个类别的数据
             id_dir_satellite = os.path.join(satellite_dir, id_name)
             id_dir_drone = os.path.join(drone_dir, id_name)
             
@@ -178,6 +192,9 @@ class University1652_Dataset(data.Dataset):
 
     def get_cam_ids(self):
         return self.cam_ids
+
+    def get_label_mapping(self):
+        return self.label_mapping
 
 def make_dataset(dataset, data_dir, height, width, batch_size, workers, erasing_p, color_jitter, train_all=False, sort=False):
     # Transforms for training

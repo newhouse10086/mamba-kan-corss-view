@@ -30,6 +30,7 @@ import yaml
 import math
 from tqdm import tqdm
 from torch.utils.data import DataLoader
+import numpy as np
 
 # --- Argparse ---
 def get_opts():
@@ -74,6 +75,9 @@ def train_model(model, criterion_id, criterion_tri, optimizer, scheduler, datalo
                     outputs, features = model(inputs)
                     _, preds = torch.max(outputs.data, 1)
                     
+                    # 确保标签在正确的范围内
+                    labels = labels.clamp(0, outputs.size(1) - 1)
+                    
                     id_loss = criterion_id(outputs, labels)
                     triplet_loss = criterion_tri(features, labels)
                     loss = id_loss + opt.triplet_loss_weight * triplet_loss
@@ -115,16 +119,12 @@ if __name__ == '__main__':
     os.environ['CUDA_VISIBLE_DEVICES'] = opt.gpu_ids
     cudnn.benchmark = True
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
 
     # Dataloaders - 使用FSRA官方数据集加载方式
-    # 根据实际数据结构调整data_dir路径
-    data_root = opt.data_dir
-    if os.path.exists(os.path.join(opt.data_dir, 'train')):
-        data_root = os.path.join(opt.data_dir, 'train')
-        
     train_loader, _, _, train_set_length, _, _ = make_dataset(
         dataset=opt.dataset,
-        data_dir=opt.data_dir,  # 使用原始data_dir，让make_dataset处理内部结构
+        data_dir=opt.data_dir,
         height=opt.h,
         width=opt.w,
         batch_size=opt.batchsize,
@@ -139,16 +139,25 @@ if __name__ == '__main__':
         'train': train_loader
     }
     
-    # 获取类别数量 - 通过遍历数据集计算
+    # 获取类别数量 - 通过遍历数据集计算所有唯一标签
     all_labels = []
     for data in train_loader:
         all_labels.extend(data[1].tolist())
     
-    num_classes = len(set(all_labels))
+    unique_labels = set(all_labels)
+    num_classes = len(unique_labels)
+    min_label = min(unique_labels)
+    max_label = max(unique_labels)
     print(f"Number of classes: {num_classes}")
+    print(f"Label range: {min_label} to {max_label}")
+    
+    # 如果标签不是从0开始的连续整数，我们需要创建一个映射
+    label_map = {label: idx for idx, label in enumerate(sorted(unique_labels))}
+    print(f"Label mapping created: {len(label_map)} unique labels")
 
     # Model
     model = FSMambaFSRA(num_classes, opt.block, opt.backbone).to(device)
+    print(f"Model created with {num_classes} classes")
 
     # Loss Functions (保持与FSRA相同)
     criterion_id = CrossEntropyLabelSmooth(num_classes)
