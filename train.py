@@ -117,9 +117,14 @@ if __name__ == '__main__':
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     # Dataloaders - 使用FSRA官方数据集加载方式
+    # 根据实际数据结构调整data_dir路径
+    data_root = opt.data_dir
+    if os.path.exists(os.path.join(opt.data_dir, 'train')):
+        data_root = os.path.join(opt.data_dir, 'train')
+        
     train_loader, _, _, train_set_length, _, _ = make_dataset(
         dataset=opt.dataset,
-        data_dir=opt.data_dir,
+        data_dir=opt.data_dir,  # 使用原始data_dir，让make_dataset处理内部结构
         height=opt.h,
         width=opt.w,
         batch_size=opt.batchsize,

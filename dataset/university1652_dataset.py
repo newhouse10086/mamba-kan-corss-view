@@ -69,17 +69,36 @@ class University1652_Dataset(data.Dataset):
             print('unknow dataset mode!')
 
     def load_university_train(self):
+        # 处理University-1652数据集结构
+        train_dir = os.path.join(self.data_dir, 'train')
+        if not os.path.exists(train_dir):
+            # 如果没有train子目录，直接使用data_dir
+            train_dir = self.data_dir
+            
         # Load the directory names (class IDs)
-        sub_dirs = [d for d in os.listdir(os.path.join(self.data_dir, 'train', 'satellite')) if os.path.isdir(os.path.join(self.data_dir, 'train', 'satellite', d))]
+        satellite_dir = os.path.join(train_dir, 'satellite')
+        drone_dir = os.path.join(train_dir, 'drone')
+        
+        # Check if directories exist
+        if not os.path.exists(satellite_dir):
+            satellite_dir = os.path.join(train_dir, 'gallery_satellite')
+        if not os.path.exists(drone_dir):
+            drone_dir = os.path.join(train_dir, 'gallery_drone')
+            
+        sub_dirs = [d for d in os.listdir(satellite_dir) if os.path.isdir(os.path.join(satellite_dir, d))]
         if self.sort:
             sub_dirs.sort()
         else:
             random.shuffle(sub_dirs)
         
         for id_name in sub_dirs:
-            id_dir_satellite = os.path.join(self.data_dir, 'train', 'satellite', id_name)
-            id_dir_drone = os.path.join(self.data_dir, 'train', 'drone', id_name)
+            id_dir_satellite = os.path.join(satellite_dir, id_name)
+            id_dir_drone = os.path.join(drone_dir, id_name)
             
+            # Check if both directories exist
+            if not os.path.exists(id_dir_satellite) or not os.path.exists(id_dir_drone):
+                continue
+                
             # Load satellite images
             satellite_images = [f for f in os.listdir(id_dir_satellite) if f.endswith('.jpg') or f.endswith('.png')]
             if self.sort:
@@ -102,18 +121,37 @@ class University1652_Dataset(data.Dataset):
 
     def load_university_eval(self):
         if self.mode == 'query':
-            data_type = 'query_drone'
+            if 'query_drone' in os.listdir(self.data_dir):
+                data_type = 'query_drone'
+            else:
+                data_type = 'drone'  # fallback
             cam_id = 1
         elif self.mode == 'gallery':
-            data_type = 'gallery_satellite'
+            if 'gallery_satellite' in os.listdir(self.data_dir):
+                data_type = 'gallery_satellite'
+            else:
+                data_type = 'satellite'  # fallback
             cam_id = 0
         
-        sub_dirs = [d for d in os.listdir(os.path.join(self.data_dir, data_type)) if os.path.isdir(os.path.join(self.data_dir, data_type, d))]
+        data_path = os.path.join(self.data_dir, data_type)
+        # Fallback to test directory if needed
+        if not os.path.exists(data_path):
+            test_dir = os.path.join(self.data_dir, 'test')
+            if os.path.exists(test_dir):
+                data_path = os.path.join(test_dir, data_type)
+        
+        if not os.path.exists(data_path):
+            print(f"Warning: {data_path} does not exist")
+            return
+            
+        sub_dirs = [d for d in os.listdir(data_path) if os.path.isdir(os.path.join(data_path, d))]
         if self.sort:
             sub_dirs.sort()
             
         for id_name in sub_dirs:
-            id_dir = os.path.join(self.data_dir, data_type, id_name)
+            id_dir = os.path.join(data_path, id_name)
+            if not os.path.exists(id_dir):
+                continue
             images = [f for f in os.listdir(id_dir) if f.endswith('.jpg') or f.endswith('.png')]
             if self.sort:
                 images.sort()
