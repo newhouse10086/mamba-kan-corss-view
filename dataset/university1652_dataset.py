@@ -65,72 +65,124 @@ def get_transforms(h, w, erasing_p, color_jitter):
 class UniversityDataset(Dataset):
     """
     重构后与官方FSRA一致的数据集类
+    支持University-1652标准数据集结构
     """
     def __init__(self, data_dir, h, w, erasing_p, color_jitter, is_train=True):
         super(UniversityDataset, self).__init__()
         self.transform = get_transforms(h, w, erasing_p, color_jitter)
         self.is_train = is_train
-        
+        self.data_dir = data_dir
+
+        print(f"[UniversityDataset] Loading data from: {data_dir}")
+
+        # 检查数据目录是否存在
+        if not os.path.exists(data_dir):
+            raise FileNotFoundError(f"Data directory not found: {data_dir}")
+
+        # 定义子目录路径
         self.drone_dir = os.path.join(data_dir, 'drone')
         self.satellite_dir = os.path.join(data_dir, 'satellite')
-        
-        # --- 新的数据加载逻辑 ---
-        drone_images = []
-        satellite_images = []
-        labels = []
-        
-        # 加载Drone图像
-        if os.path.isdir(self.drone_dir):
-            for class_dir in sorted(os.listdir(self.drone_dir)):
-                class_path = os.path.join(self.drone_dir, class_dir)
-                if os.path.isdir(class_path):
-                    try:
-                        class_id = int(class_dir)
-                        for f in os.listdir(class_path):
-                            if f.startswith('image-') and f.endswith('.jpeg'):
-                                drone_images.append(os.path.join(class_path, f))
-                                labels.append(class_id)
-                    except ValueError:
-                        continue # 跳过非数字的目录名
+        self.street_dir = os.path.join(data_dir, 'street')  # 添加street目录支持
 
-        # 加载Satellite图像
-        if os.path.isdir(self.satellite_dir):
-            for class_dir in sorted(os.listdir(self.satellite_dir)):
-                class_path = os.path.join(self.satellite_dir, class_dir)
-                if os.path.isdir(class_path):
-                    try:
-                        class_id = int(class_dir)
-                        # 卫星图像文件名与目录名相同
-                        satellite_img_path = os.path.join(class_path, f"{class_dir}.jpg")
-                        if os.path.exists(satellite_img_path):
-                            satellite_images.append(satellite_img_path)
-                            # 确保satellite的标签顺序与drone一致，这里我们只构建路径
-                    except ValueError:
-                        continue
-        
-        self.drone_images = drone_images
-        self.satellite_images = satellite_images
-        self.labels = np.array(labels)
-        
-        # 合并所有图像和标签
-        self.all_images = self.drone_images + self.satellite_images
-        
-        # 为satellite图像生成标签
-        satellite_labels = []
-        for img_path in self.satellite_images:
-            class_id = int(os.path.basename(os.path.dirname(img_path)))
-            satellite_labels.append(class_id)
-            
-        self.all_labels = np.concatenate([self.labels, np.array(satellite_labels)])
-        
+        print(f"[UniversityDataset] Checking directories:")
+        print(f"  - Drone dir: {self.drone_dir} (exists: {os.path.exists(self.drone_dir)})")
+        print(f"  - Satellite dir: {self.satellite_dir} (exists: {os.path.exists(self.satellite_dir)})")
+        print(f"  - Street dir: {self.street_dir} (exists: {os.path.exists(self.street_dir)})")
+
+        # 初始化数据列表
+        all_images = []
+        all_labels = []
+
+        # 加载Drone图像 (University-1652标准格式)
+        drone_count = self._load_images_from_dir(self.drone_dir, all_images, all_labels, 'drone')
+
+        # 加载Satellite图像 (University-1652标准格式)
+        satellite_count = self._load_images_from_dir(self.satellite_dir, all_images, all_labels, 'satellite')
+
+        # 可选：加载Street图像
+        street_count = self._load_images_from_dir(self.street_dir, all_images, all_labels, 'street')
+
+        print(f"[UniversityDataset] Loaded images:")
+        print(f"  - Drone: {drone_count}")
+        print(f"  - Satellite: {satellite_count}")
+        print(f"  - Street: {street_count}")
+        print(f"  - Total: {len(all_images)}")
+
+        if len(all_images) == 0:
+            print(f"[UniversityDataset] ERROR: No images found!")
+            print(f"[UniversityDataset] Please check your data directory structure:")
+            print(f"[UniversityDataset] Expected structure:")
+            print(f"  {data_dir}/")
+            print(f"    ├── drone/")
+            print(f"    │   ├── 0001/")
+            print(f"    │   │   ├── image1.jpg")
+            print(f"    │   │   └── ...")
+            print(f"    │   └── ...")
+            print(f"    ├── satellite/")
+            print(f"    │   ├── 0001/")
+            print(f"    │   │   ├── 0001.jpg")
+            print(f"    │   │   └── ...")
+            print(f"    │   └── ...")
+            print(f"    └── street/ (optional)")
+            raise ValueError("No training images found. Please check data directory structure.")
+
+        self.all_images = all_images
+        self.all_labels = np.array(all_labels)
+
         # 用于RandomIdentitySampler
         self.pids = sorted(list(set(self.all_labels)))
         self.pid_dic = {pid: i for i, pid in enumerate(self.pids)}
-        
+
+        print(f"[UniversityDataset] Found {len(self.pids)} unique classes/buildings")
+
         # 过滤掉标签不存在于pid_dic中的样本
         valid_indices = [i for i, label in enumerate(self.all_labels) if label in self.pid_dic]
         self.all_images = [self.all_images[i] for i in valid_indices]
         self.all_labels = [self.all_labels[i] for i in valid_indices]
+
+        print(f"[UniversityDataset] Final dataset size: {len(self.all_images)} images")
+
+    def _load_images_from_dir(self, base_dir, all_images, all_labels, view_type):
+        """
+        从指定目录加载图像，支持University-1652标准格式
+        """
+        count = 0
+        if not os.path.exists(base_dir):
+            print(f"[UniversityDataset] Warning: {view_type} directory not found: {base_dir}")
+            return count
+
+        # 遍历类别目录 (如 0001, 0002, ...)
+        for class_dir in sorted(os.listdir(base_dir)):
+            class_path = os.path.join(base_dir, class_dir)
+            if not os.path.isdir(class_path):
+                continue
+
+            try:
+                # 类别ID必须是数字
+                class_id = int(class_dir)
+            except ValueError:
+                print(f"[UniversityDataset] Skipping non-numeric directory: {class_dir}")
+                continue
+
+            # 加载该类别下的所有图像
+            if os.path.exists(class_path):
+                for img_file in os.listdir(class_path):
+                    img_path = os.path.join(class_path, img_file)
+
+                    # 检查是否为图像文件
+                    if self._is_image_file(img_file) and os.path.isfile(img_path):
+                        all_images.append(img_path)
+                        all_labels.append(class_id)
+                        count += 1
+
+        return count
+
+    def _is_image_file(self, filename):
+        """
+        检查文件是否为图像文件
+        """
+        img_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif']
+        return any(filename.lower().endswith(ext) for ext in img_extensions)
     
     def __len__(self):
         return len(self.all_images)
