@@ -1,4 +1,148 @@
 import torch
+import numpy as np
+
+def evaluate(gallery_features, query_features, gallery_labels=None, query_labels=None, k=1):
+    """
+    Evaluate retrieval performance using Recall@k and mAP
+    """
+    # If labels are not provided, generate dummy labels for testing
+    if gallery_labels is None:
+        gallery_labels = np.arange(gallery_features.size(0))
+    if query_labels is None:
+        query_labels = np.arange(query_features.size(0))
+    
+    # Convert to numpy
+    gallery_features = gallery_features.numpy() if not isinstance(gallery_features, np.ndarray) else gallery_features
+    query_features = query_features.numpy() if not isinstance(query_features, np.ndarray) else query_features
+    
+    # Compute similarity matrix
+    similarity = np.dot(query_features, gallery_features.T)
+    
+    # Compute metrics
+    top1_correct = 0
+    top5_correct = 0
+    total = query_features.shape[0]
+    
+    # For mAP calculation
+    aps = []
+    
+    for i in range(total):
+        # Get similarities for query i
+        scores = similarity[i]
+        # Sort in descending order
+        indices = np.argsort(-scores)
+        
+        # Get the true label
+        true_label = query_labels[i]
+        
+        # Check top-k matches
+        top_k_labels = [gallery_labels[idx] for idx in indices[:k]]
+        if true_label in top_k_labels:
+            if k >= 1:
+                top1_correct += 1
+            if k >= 5:
+                top5_correct += 1
+        
+        # Calculate AP for this query
+        retrieved_labels = [gallery_labels[idx] for idx in indices]
+        ap = compute_ap(retrieved_labels, true_label)
+        aps.append(ap)
+    
+    recall_at_1 = top1_correct / total
+    recall_at_5 = top5_correct / total if k >= 5 else 0
+    mAP = np.mean(aps)
+    
+    return {
+        'recall@1': recall_at_1,
+        'recall@5': recall_at_5,
+        'mAP': mAP
+    }
+
+def compute_ap(retrieved_labels, true_label, max_rank=None):
+    """
+    Compute Average Precision for a single query
+    """
+    if max_rank is None:
+        max_rank = len(retrieved_labels)
+    
+    num_relevant = 0
+    sum_precisions = 0.0
+    
+    for i, label in enumerate(retrieved_labels[:max_rank]):
+        if label == true_label:
+            num_relevant += 1
+            sum_precisions += num_relevant / (i + 1)
+    
+    if num_relevant == 0:
+        return 0.0
+    
+    return sum_precisions / num_relevant
+
+def compute_distance_matrix(x, y):
+    """
+    Compute pairwise distance matrix between two sets of features
+    """
+    m, n = x.size(0), y.size(0)
+    x = x.view(m, -1)
+    y = y.view(n, -1)
+    
+    dist = torch.pow(x, 2).sum(dim=1, keepdim=True).expand(m, n) + \
+           torch.pow(y, 2).sum(dim=1, keepdim=True).expand(n, m).t()
+    dist.addmm_(1, -2, x, y.t())
+    return dist.clamp(min=1e-12).sqrt()
+
+def compute_recall_at_k(dist_matrix, query_labels, gallery_labels, k=1):
+    """
+    Compute Recall@k given distance matrix
+    """
+    # Sort indices by distance (ascending)
+    sorted_indices = torch.argsort(dist_matrix, dim=1)
+    
+    correct = 0
+    for i in range(dist_matrix.size(0)):
+        # Get top-k gallery indices
+        top_k_indices = sorted_indices[i, :k]
+        # Get corresponding labels
+        top_k_labels = gallery_labels[top_k_indices]
+        # Check if true label is in top-k
+        if query_labels[i] in top_k_labels:
+            correct += 1
+    
+    return correct / dist_matrix.size(0)
+
+def compute_map(dist_matrix, query_labels, gallery_labels):
+    """
+    Compute mAP given distance matrix
+    """
+    # Sort indices by distance (ascending)
+    sorted_indices = torch.argsort(dist_matrix, dim=1)
+    
+    aps = []
+    for i in range(dist_matrix.size(0)):
+        # Get sorted gallery labels for this query
+        sorted_labels = gallery_labels[sorted_indices[i]]
+        # Compute AP for this query
+        ap = compute_ap(sorted_labels.numpy(), query_labels[i].item())
+        aps.append(ap)
+    
+    return np.mean(aps)
+
+def plot_cmc_curve(cmc_scores, max_rank=20):
+    """
+    Plot CMC curve
+    """
+    import matplotlib.pyplot as plt
+    
+    if len(cmc_scores) < max_rank:
+        max_rank = len(cmc_scores)
+    
+    ranks = range(1, max_rank + 1)
+    plt.plot(ranks, cmc_scores[:max_rank], marker='o')
+    plt.xlabel('Rank')
+    plt.ylabel('Recognition Rate')
+    plt.title('CMC Curve')
+    plt.grid(True)
+import torch
 import torch.nn.functional as F
 import numpy as np
 from typing import List, Tuple, Dict, Optional
